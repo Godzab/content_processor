@@ -9,7 +9,7 @@ import multiprocessing
 import argparse
 
 # Define the end-of-file indicator
-EOF_INDICATOR = "\n---EOF---\n"
+EOF_INDICATOR = "\\n---EOF---\\n"
 
 # Default exclusion patterns
 EXCLUDE_DIRS_DEFAULT = {
@@ -26,15 +26,14 @@ EXCLUDE_FILES_DEFAULT = {
     "error_log"
 }
 
-# Function to append file content with metadata to the in-memory buffer
 def process_file_content(start_directory, file_path, compress=False, exiftool_path=None):
     try:
-         with open(file_path, 'r', encoding='utf8') as file:
+        with open(file_path, 'r', encoding='utf8') as file:
             content = file.read()
             if compress:
-                content = gzip.compress(content)
+                content = gzip.compress(content.encode('utf-8'))
                 content = content.hex()  # Convert compressed content to hexadecimal string
-           
+
             # Determine the file type using mimetypes
             mime_type, _ = mimetypes.guess_type(file_path)
 
