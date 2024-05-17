@@ -10,7 +10,12 @@ setup(
         ]
     },
     install_requires=[
-        # Add any dependencies here
+        'pyexiftool',
     ],
-    # Add other package metadata (author, description, license, etc.)
+    classifiers=[
+        'Programming Language :: Python :: 3',
+        'License :: OSI Approved :: MIT License',
+        'Operating System :: OS Independent',
+    ],
+    python_requires='>=3.6',
 )
