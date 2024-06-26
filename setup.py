@@ -11,6 +11,14 @@ setup(
     },
     install_requires=[
         'pyexiftool',
+        'Pillow',  # Changed from 'pillow' to 'Pillow'
+        'python-magic',  # Changed from 'magic' to 'python-magic'
+        'mutagen',
+        'PyYAML',
+        'boto3',
+        'google-cloud-storage',
+        'inquirer',
+        'azure-storage-blob'
     ],
     classifiers=[
         'Programming Language :: Python :: 3',

@@ -1,4 +1,6 @@
 import os
+import logging
+import sys
 import gzip
 import json
 import fnmatch
@@ -6,7 +8,43 @@ import mimetypes
 import exiftool
 from datetime import datetime
 import multiprocessing
-import argparse
+import xml.etree.ElementTree as ET
+import yaml
+import csv
+import configparser
+
+def generate_file_structure(start_path, excluded_patterns=None):
+    if excluded_patterns is None:
+        excluded_patterns = []
+
+    def is_excluded(path):
+        return any(fnmatch.fnmatch(os.path.basename(path), pattern) for pattern in excluded_patterns)
+
+    def tree(dir_path, prefix="", is_last=True):
+        contents = [d for d in os.listdir(dir_path) if not is_excluded(os.path.join(dir_path, d))]
+        contents = sorted(contents, key=lambda x: (os.path.isfile(os.path.join(dir_path, x)), x.lower()))
+        pointers = ["└── " if is_last else "├── "] if prefix else [""]
+        
+        for i, path in enumerate(contents):
+            is_last_item = (i == len(contents) - 1)
+            yield prefix + pointers[0] + path
+            
+            if os.path.isdir(os.path.join(dir_path, path)):
+                extension = "    " if is_last else "│   "
+                yield from tree(os.path.join(dir_path, path), prefix + extension, is_last_item)
+
+    return "\n".join(tree(start_path))
+
+def load_config(config_file):
+    config = configparser.ConfigParser()
+    config.read(config_file)
+    return config
+
+def get_config_value(config, section, key, default=None):
+    try:
+        return config.get(section, key)
+    except (configparser.NoSectionError, configparser.NoOptionError):
+        return default
 
 # Define the end-of-file indicator
 EOF_INDICATOR = "\\n---EOF---\\n"
@@ -25,6 +63,23 @@ EXCLUDE_FILES_DEFAULT = {
     "yarn-error.log", "composer-lock.json", "yarn-debug.log", "access_log", 
     "error_log"
 }
+
+def setup_logging(log_file=None, log_level=logging.INFO):
+    logger = logging.getLogger('content_processor')
+    logger.setLevel(log_level)
+
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    if log_file:
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    return logger
 
 def process_file_content(start_directory, file_path, compress=False, exiftool_path=None):
     try:
@@ -109,7 +164,66 @@ def paginate_file_list(file_list, page_size):
         json_pages.append(json_page)
     return {"pages": json_pages}
 
-def main(start_directory, compress=False, parallel=False, page_size=100, exclude_patterns=None, exiftool_path='exiftool'):
+def export_json(data, output_file):
+    with open(output_file, 'w') as f:
+        json.dump(data, f, indent=2)
+
+def export_csv(data, output_file):
+    with open(output_file, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['name', 'path', 'size', 'created_at', 'modified_at', 'metadata', 'content'])
+        for file in data['pages'][0]['files']:
+            writer.writerow([
+                file['name'],
+                file['path'],
+                file['size'],
+                file['created_at'],
+                file['modified_at'],
+                json.dumps(file['metadata']),
+                file['content']
+            ])
+
+def export_xml(data, output_file):
+    root = ET.Element('content_processor_output')
+    for page in data['pages']:
+        page_elem = ET.SubElement(root, 'page')
+        page_elem.set('number', str(page['page']))
+        for file in page['files']:
+            file_elem = ET.SubElement(page_elem, 'file')
+            for key, value in file.items():
+                elem = ET.SubElement(file_elem, key)
+                if isinstance(value, dict):
+                    elem.text = json.dumps(value)
+                else:
+                    elem.text = str(value)
+    tree = ET.ElementTree(root)
+    tree.write(output_file, encoding='unicode', xml_declaration=True)
+
+def export_yaml(data, output_file):
+    with open(output_file, 'w') as f:
+        yaml.dump(data, f)
+
+def main(start_directory, config_file=None, **kwargs):
+    logger = setup_logging(None, logging.INFO)
+
+    if config_file and os.path.exists(config_file):
+        config = load_config(config_file)
+        compress = get_config_value(config, 'Processing', 'compress', 'False').lower() == 'true'
+        parallel = get_config_value(config, 'Processing', 'parallel', 'False').lower() == 'true'
+        page_size = int(get_config_value(config, 'Output', 'page_size', '100'))
+        exclude_patterns = get_config_value(config, 'Exclusion', 'patterns', '').split(',')
+        exiftool_path = get_config_value(config, 'Tools', 'exiftool_path', 'exiftool')
+        output_format = get_config_value(config, 'Output', 'format', 'json')
+        output_file = get_config_value(config, 'Output', 'file', 'output')
+    else:
+        compress = kwargs.get('compress', False)
+        parallel = kwargs.get('parallel', False)
+        page_size = kwargs.get('page_size', 100)
+        exclude_patterns = kwargs.get('exclude_patterns', [])
+        exiftool_path = kwargs.get('exiftool_path', 'exiftool')
+        output_format = kwargs.get('output_format', 'json')
+        output_file = kwargs.get('output_file', 'output')
+
     # Check if start directory exists
     if not os.path.isdir(start_directory):
         print(f"The specified start directory '{start_directory}' does not exist or is not a directory.")
@@ -121,12 +235,27 @@ def main(start_directory, compress=False, parallel=False, page_size=100, exclude
 
     # Create a list to store file metadata
     file_list = []
+
+    file_structure = generate_file_structure(start_directory, exclude_patterns)
+    # logger.info("File structure being processed:\n" + file_structure)
     
     # Process directory
+    logger.info(f"Processing directory: {start_directory}")
     process_directory(start_directory, file_list, compress, excluded_dirs, excluded_files, parallel, exiftool_path)
 
-    # Paginate the file list
+    logger.info(f"Processed {len(file_list)} files")
     json_data = paginate_file_list(file_list, page_size)
     
-    # Output the final JSON data
-    print(json.dumps(json_data, indent=2))
+    logger.info(f"Exporting data in {output_format} format to {output_file}")
+    if output_format == 'json':
+        export_json(json_data, f"{output_file}.json")
+    elif output_format == 'csv':
+        export_csv(json_data, f"{output_file}.csv")
+    elif output_format == 'xml':
+        export_xml(json_data, f"{output_file}.xml")
+    elif output_format == 'yaml':
+        export_yaml(json_data, f"{output_file}.yaml")
+    else:
+        print(f"Unsupported output format: {output_format}")
+    
+    logger.info("Processing completed successfully")
